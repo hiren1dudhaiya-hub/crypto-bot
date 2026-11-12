@@ -4,107 +4,84 @@ import aiohttp
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# --- ENV FIX ---
 BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("TOKEN")
-CHAT_ID_ENV = os.getenv("CHAT_ID")
-CHAT_ID = int(CHAT_ID_ENV) if CHAT_ID_ENV and CHAT_ID_ENV.isdigit() else None
+CHAT_ID = int(os.getenv("CHAT_ID")) if os.getenv("CHAT_ID") and os.getenv("CHAT_ID").isdigit() else None
 
 BINANCE_API = "https://data-api.binance.vision"
-TOP_N = 100
+BLACKLIST = ["USDC","USD1","FDUSD","BFUSD","RLUSD","XUSD","EUR","UUSD","RWUSD","USDF","USDE","TUSD","DAI","PAXG","XAUT","WBETH","BNCB","BNRB","TSLAB","GOOGLB","AVGO","SPCX","CRCLB","QQQB","U","POL","ASTER","AVGOB"]
 
-async def get_top_symbols(session):
+async def get_symbols(session):
     url = f"{BINANCE_API}/api/v3/ticker/24hr"
     async with session.get(url) as r:
         data = await r.json()
-        # USDT pairs only, sorted by volume
         usdt = [d for d in data if d['symbol'].endswith('USDT')]
         usdt.sort(key=lambda x: float(x['quoteVolume']), reverse=True)
-        return [d['symbol'] for d in usdt[:TOP_N]]
+        top100 = [d['symbol'] for d in usdt[:100]]
+        # 77 filter
+        filtered = [s for s in top100 if s.replace('USDT','') not in BLACKLIST and not s.replace('USDT','').startswith("USD")]
+        return filtered # ~77
 
-async def get_klines(session, symbol):
-    url = f"{BINANCE_API}/api/v3/klines?symbol={symbol}&interval=15m&limit=6"
+async def get_range_1h(session, symbol):
+    url = f"{BINANCE_API}/api/v3/klines?symbol={symbol}&interval=1h&limit=6"
     try:
         async with session.get(url, timeout=10) as r:
-            klines = await r.json()
-            if not isinstance(klines, list) or len(klines) < 6:
-                return None
+            kl = await r.json()
+            if not isinstance(kl, list) or len(kl) < 6: return None
             ranges = []
-            for k in klines:
-                high = float(k[2]); low = float(k[3])
-                if low == 0: return None
-                rng = ((high - low) / low) * 100
-                ranges.append(rng)
-            avg_range = sum(ranges) / len(ranges)
-            return avg_range, ranges
+            for k in kl:
+                h=float(k[2]); l=float(k[3])
+                ranges.append(((h-l)/l)*100 if l!=0 else 0)
+            avg = sum(ranges)/len(ranges)
+            return avg
     except:
         return None
 
 async def do_scan():
-    results = []
+    res=[]
     async with aiohttp.ClientSession() as session:
-        symbols = await get_top_symbols(session)
-        for sym in symbols:
-            data = await get_klines(session, sym)
-            if not data: continue
-            avg_range, all_ranges = data
-            # V16 LOGIC: Avg < 0.9 = TIGHT
-            if avg_range < 0.9:
-                status = "✅"
-            else:
-                status = "❌"
-            results.append((sym, avg_range, status))
-    
-    # Sort by tightest first
-    results.sort(key=lambda x: x[1])
-    return results
+        syms = await get_symbols(session)
+        for s in syms:
+            avg = await get_range_1h(session, s)
+            if avg is None: continue
+            coin = s.replace('USDT','')
+            status = "✅" if avg < 0.9 else "❌"
+            res.append((coin, avg, status))
+    res.sort(key=lambda x: x[1]) # % wise low to high
+    return res
 
 def format_msg(results):
-    msg = f"🔍 DELTA 20 SCANNER - V16 FAIL-SAFE\nBINANCE ONLY - data-api.binance.vision se\nHar 15 min\n\n"
-    msg += f"Top {len(results)} scanned:\n"
-    for sym, avg, status in results[:30]: # top 30 tightest show
-        coin = sym.replace('USDT','')
-        msg += f"{coin} {avg:.2f}% {status}\n"
+    msg = f"🔍 DELTA 20 - V17 (1H x 6)\n77 Coins - % wise Sorted\nHar 15 min\n\n"
+    for coin, avg, st in results:
+        msg += f"{coin} {avg:.2f}% {st}\n"
     
-    tight_count = sum(1 for r in results if r[2] == "✅")
-    msg += f"\nTotal Tight: {tight_count}/{len(results)}"
+    tight = [f"{c} ({a:.2f}%)" for c,a,s in results if s=="✅"]
+    msg += f"\nTotal Tight: {len(tight)}/{len(results)}\n"
+    if tight:
+        msg += f"\n🚀 SIGNAL:\n" + "\n".join(tight[:15])
+    else:
+        msg += "\nNo tight breakout now"
     return msg
 
-async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Scanning... V16 chal raha hai...")
+async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Scanning 77 coins - 1H x 6...")
     results = await do_scan()
-    msg = format_msg(results)
-    await update.message.reply_text(msg)
+    await update.message.reply_text(format_msg(results))
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Chat ID batayega taki env me dal sake
-    cid = update.effective_chat.id
-    await update.message.reply_text(f"Bot Active ✅ V16\nYour Chat ID: {cid}\nIsko FadeHost me CHAT_ID me dal do.")
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"V17 Active - ID: {update.effective_chat.id}")
 
 async def auto_job(context: ContextTypes.DEFAULT_TYPE):
-    if not CHAT_ID:
-        print("CHAT_ID not set, skipping auto msg")
-        return
+    if not CHAT_ID: return
     results = await do_scan()
-    msg = format_msg(results)
-    await context.bot.send_message(chat_id=CHAT_ID, text=msg)
+    await context.bot.send_message(chat_id=CHAT_ID, text=format_msg(results))
 
 def main():
-    if not BOT_TOKEN:
-        print("BOT_TOKEN / TELEGRAM_BOT_TOKEN missing!")
-        return
     app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("scan", scan_command))
-    
-    # Auto every 15 min
+    app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(CommandHandler("scan", scan_cmd))
     if CHAT_ID:
-        app.job_queue.run_repeating(auto_job, interval=900, first=10)
-        print(f"Auto msg enabled for CHAT_ID {CHAT_ID} every 15m")
-    else:
-        print("CHAT_ID not found, auto disabled. /start se ID leke env me dalo")
-
-    print("Bot started V16")
+        app.job_queue.run_repeating(auto_job, interval=900, first=15)
     app.run_polling()
 
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
