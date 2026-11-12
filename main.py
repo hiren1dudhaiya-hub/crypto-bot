@@ -1,93 +1,109 @@
-import os, requests, pandas as pd, traceback
-from datetime import datetime
+import os
+import asyncio
+import aiohttp
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from ta.volatility import BollingerBands
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+# --- ENV FIX ---
+BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("TOKEN")
+CHAT_ID_ENV = os.getenv("CHAT_ID")
+CHAT_ID = int(CHAT_ID_ENV) if CHAT_ID_ENV and CHAT_ID_ENV.isdigit() else None
 
-COINS_49 = ["BTC/USDT","ETH/USDT","SOL/USDT","XRP/USDT","BNB/USDT","MATIC/USDT","DOGE/USDT","AVAX/USDT","LINK/USDT","SHIB/USDT","ADA/USDT","DOT/USDT","LTC/USDT","TRX/USDT","ETC/USDT","ATOM/USDT","NEAR/USDT","UNI/USDT","FIL/USDT","APT/USDT","ARB/USDT","OP/USDT","INJ/USDT","SUI/USDT","SEI/USDT","PEPE/USDT","BONK/USDT","WIF/USDT","RNDR/USDT","FET/USDT","AGIX/USDT","GRT/USDT","AAVE/USDT","MKR/USDT","SNX/USDT","CRV/USDT","LDO/USDT","RUNE/USDT","STX/USDT","IMX/USDT","FLOW/USDT","CHZ/USDT","SAND/USDT","MANA/USDT","AXS/USDT","GALA/USDT","ENJ/USDT","CFX/USDT"]
+BINANCE_API = "https://data-api.binance.vision"
+TOP_N = 100
 
-def fetch_binance_klines(symbol): # BTC/USDT -> BTCUSDT
+async def get_top_symbols(session):
+    url = f"{BINANCE_API}/api/v3/ticker/24hr"
+    async with session.get(url) as r:
+        data = await r.json()
+        # USDT pairs only, sorted by volume
+        usdt = [d for d in data if d['symbol'].endswith('USDT')]
+        usdt.sort(key=lambda x: float(x['quoteVolume']), reverse=True)
+        return [d['symbol'] for d in usdt[:TOP_N]]
+
+async def get_klines(session, symbol):
+    url = f"{BINANCE_API}/api/v3/klines?symbol={symbol}&interval=15m&limit=6"
     try:
-        binance_symbol = symbol.replace("/","") # BTCUSDT
-        url = f"https://data-api.binance.vision/api/v3/klines?symbol={binance_symbol}&interval=1h&limit=30"
-        r = requests.get(url, timeout=10)
-        data = r.json()
-        if isinstance(data, dict) and 'code' in data: return None # invalid symbol
-        # data = [[openTime, open, high, low, close, volume...], ...]
-        ohlcv = []
-        for k in data:
-            ohlcv.append([k[0], float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])])
-        return ohlcv
+        async with session.get(url, timeout=10) as r:
+            klines = await r.json()
+            if not isinstance(klines, list) or len(klines) < 6:
+                return None
+            ranges = []
+            for k in klines:
+                high = float(k[2]); low = float(k[3])
+                if low == 0: return None
+                rng = ((high - low) / low) * 100
+                ranges.append(rng)
+            avg_range = sum(ranges) / len(ranges)
+            return avg_range, ranges
     except:
         return None
 
-def get_full_data():
-    data_list = []
-    for symbol in COINS_49:
-        ohlcv = fetch_binance_klines(symbol)
-        if not ohlcv or len(ohlcv) < 20: 
-            print(f"Binance fail {symbol}")
-            continue
-        df = pd.DataFrame(ohlcv, columns=['ts','open','high','low','close','vol'])
-        last_6 = df.tail(6).copy()
-        last_6['range'] = (last_6['high'] - last_6['low']) / last_6['low'] * 100
-        is_tight = (last_6['range'] < 0.9).all()
-        avg_range = last_6['range'].mean()
-        bb = BollingerBands(close=df['close'], window=20, window_dev=2)
-        lower = bb.bollinger_lband().iloc[-1]
-        upper = bb.bollinger_hband().iloc[-1]
-        price = df['close'].iloc[-1]
-        bb_status = "MID"
-        if price <= lower*1.005: bb_status = "LOWER"
-        elif price >= upper*0.995: bb_status = "UPPER"
-        is_super = is_tight and bb_status != "MID"
-        data_list.append({"Coin": symbol, "6C Avg%": round(avg_range,2), "Tight?": "YES" if is_tight else "NO", "BB": bb_status, "Super?": "YES" if is_super else "NO"})
-    return data_list
+async def do_scan():
+    results = []
+    async with aiohttp.ClientSession() as session:
+        symbols = await get_top_symbols(session)
+        for sym in symbols:
+            data = await get_klines(session, sym)
+            if not data: continue
+            avg_range, all_ranges = data
+            # V16 LOGIC: Avg < 0.9 = TIGHT
+            if avg_range < 0.9:
+                status = "✅"
+            else:
+                status = "❌"
+            results.append((sym, avg_range, status))
+    
+    # Sort by tightest first
+    results.sort(key=lambda x: x[1])
+    return results
 
-async def send_scan(chat_id, context):
-    try:
-        data = get_full_data()
-        if not data:
-            await context.bot.send_message(chat_id=chat_id, text="❌ Binance API fail - logs check")
-            return
-        lines, buy_sell = [], []
-        for d in data:
-            tight = "✅" if d["Tight?"]=="YES" else "❌"
-            bb = "L" if "LOWER" in d["BB"] else "U" if "UPPER" in d["BB"] else "-"
-            sig = ""
-            if d["Super?"]=="YES":
-                if d["BB"]=="LOWER":
-                    sig = "🟢BUY"; buy_sell.append(f"🟢 BUY {d['Coin']}")
-                else:
-                    sig = "🔴SELL"; buy_sell.append(f"🔴 SELL {d['Coin']}")
-            coin_short = d["Coin"].split("/")[0]
-            lines.append(f"{coin_short} {d['6C Avg%']}% {tight}{bb} {sig}".strip())
-        msg = ""
-        if buy_sell: msg += "🚨 *BINANCE SIGNALS:*\n" + "\n".join(buy_sell) + "\n\n"
-        msg += f"📊 BINANCE 49 COINS - {datetime.now().strftime('%H:%M')} UTC ({len(data)}/49)\n" + "\n".join(lines) + "\n\n✅=Tight L=Lower U=Upper"
-        await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
-    except Exception as e:
-        await context.bot.send_message(chat_id=chat_id, text=f"❌ ERROR:\n{traceback.format_exc()[-800:]}")
+def format_msg(results):
+    msg = f"🔍 DELTA 20 SCANNER - V16 FAIL-SAFE\nBINANCE ONLY - data-api.binance.vision se\nHar 15 min\n\n"
+    msg += f"Top {len(results)} scanned:\n"
+    for sym, avg, status in results[:30]: # top 30 tightest show
+        coin = sym.replace('USDT','')
+        msg += f"{coin} {avg:.2f}% {status}\n"
+    
+    tight_count = sum(1 for r in results if r[2] == "✅")
+    msg += f"\nTotal Tight: {tight_count}/{len(results)}"
+    return msg
+
+async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Scanning... V16 chal raha hai...")
+    results = await do_scan()
+    msg = format_msg(results)
+    await update.message.reply_text(msg)
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Chat ID batayega taki env me dal sake
+    cid = update.effective_chat.id
+    await update.message.reply_text(f"Bot Active ✅ V16\nYour Chat ID: {cid}\nIsko FadeHost me CHAT_ID me dal do.")
 
 async def auto_job(context: ContextTypes.DEFAULT_TYPE):
-    if CHAT_ID: await send_scan(int(CHAT_ID), context)
-
-async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 Binance se 49 coins check kar raha hu...")
-    await send_scan(update.effective_chat.id, context)
-
-async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("V12 BINANCE ONLY - data-api.binance.vision se - Har 15 min")
+    if not CHAT_ID:
+        print("CHAT_ID not set, skipping auto msg")
+        return
+    results = await do_scan()
+    msg = format_msg(results)
+    await context.bot.send_message(chat_id=CHAT_ID, text=msg)
 
 def main():
+    if not BOT_TOKEN:
+        print("BOT_TOKEN / TELEGRAM_BOT_TOKEN missing!")
+        return
     app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("scan", scan_cmd))
-    app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("scan", scan_command))
+    
+    # Auto every 15 min
     if CHAT_ID:
         app.job_queue.run_repeating(auto_job, interval=900, first=10)
+        print(f"Auto msg enabled for CHAT_ID {CHAT_ID} every 15m")
+    else:
+        print("CHAT_ID not found, auto disabled. /start se ID leke env me dalo")
+
+    print("Bot started V16")
     app.run_polling()
 
 if __name__ == "__main__":
