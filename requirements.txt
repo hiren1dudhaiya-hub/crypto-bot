@@ -1,6 +1,4 @@
-ccxt
-pandas
-ta
-python-telegram-bot[job-queue]
-requests
+aiohttp==3.9.5
+python-telegram-bot[job-queue]==20.7
 python-dotenv
+requests
