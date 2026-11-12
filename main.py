@@ -24,15 +24,24 @@ async def get_data_1h(session, symbol):
     try:
         async with session.get(url, timeout=10) as r:
             kl = await r.json()
-            if not isinstance(kl, list) or len(kl) < 6: return None
-            highs = [float(k[2]) for k in kl]; lows = [float(k[3]) for k in kl]; closes = [float(k[4]) for k in kl]
+            if not isinstance(kl, list) or len(kl) < 6:
+                return None
+            highs = [float(k[2]) for k in kl]
+            lows = [float(k[3]) for k in kl]
+            closes = [float(k[4]) for k in kl]
             avg_range = sum([((h-l)/l)*100 for h,l in zip(highs,lows)])/6
-            curr = closes[-1]; six_h_high = max(highs); six_h_low = min(lows)
-            if (six_h_high - curr)/curr*100 < 0.15: direction = "🚀 BUY"
-            elif (curr - six_h_low)/curr*100 < 0.15: direction = "🔻 SELL"
-            else: direction = "Tight"
+            curr = closes[-1]
+            six_h_high = max(highs)
+            six_h_low = min(lows)
+            if (six_h_high - curr)/curr*100 < 0.15:
+                direction = "🚀 BUY"
+            elif (curr - six_h_low)/curr*100 < 0.15:
+                direction = "🔻 SELL"
+            else:
+                direction = "Tight"
             return avg_range, direction
-    except: return None
+    except:
+        return None
 
 async def do_scan():
     res=[]
@@ -40,41 +49,28 @@ async def do_scan():
         syms = await get_symbols(session)
         for s in syms:
             d = await get_data_1h(session, s)
-            if not d: continue
+            if not d:
+                continue
             avg, direction = d
             coin = s.replace('USDT','')
             st = "✅" if avg < 0.9 else "❌"
             res.append((coin, avg, st, direction, s))
-    res.sort(key=lambda x: x[1]); return res
+    res.sort(key=lambda x: x[1])
+    return res
 
 def format_msg(results):
-    # Compact - Coin name hi link hai
-    msg = f"🔍 <b>DELTA 20 - V20 (1H x 6)</b>\n77 Coins | Har 15 min\n\n"
+    msg = f"🔍 <b>DELTA 20 - V21 (1H x 6)</b>\n77 Coins | Har 15 min\n\n"
     for coin, avg, st, direction, symbol in results:
-        delta_link = f"https://www.delta.exchange/app/futures/{symbol}"
-        # Coin name clickable - jagah nahi lega
+        delta_symbol = symbol.replace("USDT","USD")
+        delta_link = f"https://www.delta.exchange/app/futures/{delta_symbol}"
         msg += f'<a href="{delta_link}">{coin}</a> {avg:.2f}% {st} {direction}\n'
     tight = [r for r in results if r[2]=="✅"]
     msg += f"\nTotal Tight: {len(tight)}/{len(results)}"
+    if len(msg) > 3900:
+        msg = msg[:3900] + "\n...long"
     return msg
 
-async def scan_cmd(update, context):
-    await update.message.reply_text("Scanning V20...")
+async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Scanning V21...")
     results = await do_scan()
-    await update.message.reply_text(format_msg(results), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
-
-async def start_cmd(update, context):
-    await update.message.reply_text(f"V20 Active - ID: {update.effective_chat.id}")
-
-async def auto_job(context):
-    results = await do_scan()
-    await context.bot.send_message(chat_id=CHAT_ID, text=format_msg(results), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
-
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CommandHandler("scan", scan_cmd))
-    app.job_queue.run_repeating(auto_job, interval=900, first=15)
-    app.run_polling()
-
-if __name__=="__main__": main()
+    await update.message.reply_text(format_msg(results), parse_mode=ParseMode.HTML, disable_web
