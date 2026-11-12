@@ -3,8 +3,8 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.constants import ParseMode
 
-BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("TOKEN")
-CHAT_ID = int(os.getenv("CHAT_ID")) if os.getenv("CHAT_ID") else 7086505670
+BOT_TOKEN = "8465.... tera token yahan"  # yahan apna token daal
+CHAT_ID = 7086505670
 
 BINANCE_API = "https://data-api.binance.vision"
 BLACKLIST = ["USDC","USD1","FDUSD","BFUSD","RLUSD","XUSD","EUR","UUSD","RWUSD","USDF","USDE","TUSD","DAI","PAXG","XAUT","WBETH","BNCB","BNRB","TSLAB","GOOGLB","AVGO","SPCX","CRCLB","QQQB","U","POL","ASTER"]
@@ -19,7 +19,7 @@ async def get_symbols(session):
             top100 = [d['symbol'] for d in usdt[:100]]
             filtered = [s for s in top100 if s.replace('USDT','') not in BLACKLIST and not s.replace('USDT','').startswith("USD")]
             return filtered[:77]
-    except: return ["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","TRXUSDT","DOGEUSDT","NEARUSDT","AVAXUSDT","LINKUSDT","ADAUSDT","LTCUSDT","BCHUSDT","UNIUSDT","ETCUSDT","PEPEUSDT","APTUSDT","OPUSDT","ARBUSDT","FILUSDT","SUIUSDT","STXUSDT","TAOUSDT","DOTUSDT","SHIBUSDT","BONKUSDT"]
+    except: return ["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","TRXUSDT","DOGEUSDT"]
 
 async def get_data_1h(session, symbol, sem):
     url = f"{BINANCE_API}/api/v3/klines?symbol={symbol}&interval=1h&limit=6"
@@ -53,7 +53,7 @@ def format_msg(results):
     tight = len([r for r in results if r[2]=="✅"])
     msg = f"🔍 <b>DELTA 20 - V23 (1H x 6) | {len(results)} Coins</b>\n\n"
     for coin, avg, st, direction, symbol in results:
-        delta_link = f"https://www.delta.exchange/app/futures/{symbol.replace('USDT','USD')}"
+        delta_link = f"https://www.delta.exchange/app/futures/{symbol}" # FIXED - NO USD REPLACE
         msg += f'<a href="{delta_link}">{coin}</a> {avg:.2f}% {st} {direction}\n'
     msg += f"\nTotal Tight: {tight}/{len(results)}"
     return msg
@@ -68,7 +68,7 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     asyncio.create_task(background_scan(update.effective_chat.id, context))
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"V26 Ready - ID: {update.effective_chat.id}")
+    await update.message.reply_text(f"✅ ONLINE! ID: {update.effective_chat.id}")
 
 async def auto_loop(app):
     await asyncio.sleep(30)
@@ -84,4 +84,5 @@ def main():
     async def on_startup(app): asyncio.create_task(auto_loop(app))
     app.post_init = on_startup
     app.run_polling()
+
 if __name__ == "__main__": main()
