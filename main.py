@@ -1,32 +1,25 @@
-import os, asyncio, aiohttp
+import os
+import asyncio
+import aiohttp
+from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.constants import ParseMode
 
-# --- TOKEN - Yahan apna token daal de ---
-BOT_TOKEN = os.getenv("BOT_TOKEN") or "8465758405:AAH...TeraPuraTokenYahan"
+BOT_TOKEN = os.getenv("BOT_TOKEN") or "8465758405:AAH_YOUR_TOKEN_HERE"
 CHAT_ID = int(os.getenv("CHAT_ID") or "7086505670")
 
 BINANCE_API = "https://data-api.binance.vision"
-BLACKLIST = ["USDC","USD1","FDUSD","BFUSD","RLUSD","XUSD","EUR","UUSD","RWUSD","USDF","USDE","TUSD","DAI","PAXG","XAUT","WBETH","BNCB","BNRB","TSLAB","GOOGLB","AVGO","SPCX","CRCLB","QQQB","U","POL","ASTER","AVGOB","BDRM"]
 
-async def get_symbols(session):
-    try:
-        async with session.get(f"{BINANCE_API}/api/v3/ticker/24hr", timeout=15) as r:
-            data = await r.json()
-            usdt = [d for d in data if d['symbol'].endswith('USDT')]
-            usdt.sort(key=lambda x: float(x.get('quoteVolume', 0)), reverse=True)
-            top = [d['symbol'] for d in usdt[:120]]
-            clean = []
-            for s in top:
-                coin = s.replace('USDT','')
-                if coin not in BLACKLIST and not coin.startswith('USD') and len(coin) <= 10:
-                    clean.append(s)
-                if len(clean) >= 77: break
-            return clean
-    except Exception as e:
-        print(f"Symbols error: {e}")
-        return ["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","TRXUSDT","DOGEUSDT","BNBUSDT","AVAXUSDT","LINKUSDT","ADAUSDT","LTCUSDT","BCHUSDT","SHIBUSDT","DOTUSDT","NEARUSDT","UNIUSDT","PEPEUSDT","APTUSDT","ETCUSDT","XLMUSDT","FILUSDT","ARBUSDT","TAOUSDT","IMXUSDT","OPUSDT","SUIUSDT","TIAUSDT","WIFUSDT","BONKUSDT","ARUSDT","LDOUSDT","JUPUSDT","WLDUSDT","FETUSDT","RNDRUSDT","GRTUSDT","AAVEUSDT","MKRUSDT","STXUSDT","INJUSDT","ATOMUSDT","ENAUSDT","RENDERUSDT","SEIUSDT","STRKUSDT","ONDOUSDT","FLOKIUSDT","JASMYUSDT","BRETTUSDT","POPCATUSDT","WUSDT","NOTUSDT","ORDIUSDT","1000SATSUSDT","PENDLEUSDT","PYTHUSDT","GALAUSDT","FTMUSDT","RUNEUSDT","BONKUSDT","WIFUSDT","BOMEUSDT","ZKUSDT","ZROUSDT","LISTAUSDT","MEWUSDT","IOUSDT","WUSDT"]
+DELTA_COINS = [
+    "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","BNBUSDT","DOGEUSDT",
+    "ADAUSDT","AVAXUSDT","LINKUSDT","BCHUSDT","LTCUSDT","XLMUSDT",
+    "DOTUSDT","ATOMUSDT","ETCUSDT","FILUSDT","TRXUSDT","SHIBUSDT",
+    "UNIUSDT","PEPEUSDT","ARBUSDT","OPUSDT","NEARUSDT","APTUSDT",
+    "SUIUSDT","TAOUSDT","RENDERUSDT","AAVEUSDT","MKRUSDT","INJUSDT",
+    "LDOUSDT","GRTUSDT","STXUSDT","IMXUSDT","HBARUSDT","VETUSDT",
+    "QNTUSDT","ALGOUSDT","EGLDUSDT","FTMUSDT"
+]
 
 async def get_data(session, symbol, sem):
     url = f"{BINANCE_API}/api/v3/klines?symbol={symbol}&interval=1h&limit=6"
@@ -40,74 +33,72 @@ async def get_data(session, symbol, sem):
                 closes = [float(k[4]) for k in kl]
                 avg_range = sum([((h-l)/l)*100 for h,l in zip(highs,lows)]) / 6
                 curr = closes[-1]
-                high6 = max(highs)
-                low6 = min(lows)
+                high6 = max(highs); low6 = min(lows)
                 if (high6-curr)/curr*100 < 0.15: direction = "🚀 BUY"
                 elif (curr-low6)/curr*100 < 0.15: direction = "🔻 SELL"
                 else: direction = "Tight"
-                coin = symbol.replace('USDT','')
+                coin = symbol.replace("USDT","")
                 st = "✅" if avg_range < 0.9 else "❌"
                 return (coin, avg_range, st, direction, symbol)
         except: return None
 
 async def do_scan():
     async with aiohttp.ClientSession() as session:
-        symbols = await get_symbols(session)
-        sem = asyncio.Semaphore(25)
-        tasks = [get_data(session, s, sem) for s in symbols]
-        results = await asyncio.gather(*tasks)
+        sem = asyncio.Semaphore(15)
+        results = await asyncio.gather(*[get_data(session, s, sem) for s in DELTA_COINS])
         final = [r for r in results if r]
         final.sort(key=lambda x: x[1])
-        return final[:77]
+        return final
 
 def format_msg(results):
     tight = len([r for r in results if r[2] == "✅"])
-    msg = f"🔍 <b>DELTA 20 - (1H x 6) | {len(results)} Coins</b>\n\n"
+    ist = datetime.utcnow() + timedelta(hours=5, minutes=30)
+    time_str = ist.strftime("%d-%b %I:%M %p IST")
+    msg = f"🔍 <b>DELTA 20 - (1H x 6) | {len(results)} Coins</b>\n"
+    msg += f"<i>⏰ {time_str} | Auto 15 min</i>\n\n"
     for coin, avg, st, direction, symbol in results:
-        # PERFECT LINK - kabhi 404 nahi ayega
-        link = f"https://www.delta.exchange/app/futures/{symbol}"
+        link = f"https://www.delta.exchange/app/futures/trade/{coin}/{coin}USD?chart_orderbook_tab=chart"
         msg += f'<a href="{link}">{coin}</a> {avg:.2f}% {st} {direction}\n'
-    msg += f"\nTotal Tight: {tight}/{len(results)} | 24x7 Auto"
+    msg += f"\n<b>Total Tight: {tight}/{len(results)}</b> | Live Data"
     return msg
 
-async def background_scan(chat_id, context):
+async def background_scan(chat_id, context, is_auto=False):
     try:
         results = await do_scan()
-        if not results: return
-        text = format_msg(results)
-        await context.bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
-        print("Scan sent")
+        if results:
+            txt = format_msg(results)
+            if is_auto:
+                txt = f"🤖 <b>AUTO SIGNAL - 15 MIN</b>\n\n" + txt
+            await context.bot.send_message(chat_id=chat_id, text=txt, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
     except Exception as e:
-        print(f"Scan error: {e}")
+        print(f"Error: {e}")
 
 async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 Scanning 77 coins, ek hi msg me bhejunga...")
-    asyncio.create_task(background_scan(update.effective_chat.id, context))
+    await update.message.reply_text("🔍 Scanning live data...")
+    asyncio.create_task(background_scan(update.effective_chat.id, context, False))
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"✅ Bot ONLINE 24x7\nID: {update.effective_chat.id}\n/scan = manual scan\nAuto har 15 min")
+    await update.message.reply_text(f"✅ BOT ONLINE 24x7\nID: {update.effective_chat.id}\n\n/scan - Manual scan\nAuto signal har 15 min me ayega")
 
 async def auto_loop(app):
-    await asyncio.sleep(20)
-    print("Auto loop started")
+    await asyncio.sleep(10)
+    # Start pe ek baar bhej de
+    try: await background_scan(CHAT_ID, app, True)
+    except: pass
     while True:
+        await asyncio.sleep(900)  # 15 minute = 900 sec
         try:
-            print("Auto scanning...")
-            await background_scan(CHAT_ID, app)
+            await background_scan(CHAT_ID, app, True)
         except Exception as e:
-            print(f"Auto error: {e}")
-        await asyncio.sleep(900)  # 15 min
+            print(e)
 
 def main():
-    if not BOT_TOKEN or "TeraPuraToken" in BOT_TOKEN:
-        print("ERROR: Token daalo pehle!")
-        return
-    print(f"Starting Bot... Token OK: {BOT_TOKEN[:10]}...")
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("scan", scan_cmd))
     async def on_startup(a): asyncio.create_task(auto_loop(a))
     app.post_init = on_startup
+    print("Bot starting...")
     app.run_polling()
 
 if __name__ == "__main__":
