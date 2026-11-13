@@ -80,19 +80,22 @@ def format_msg(results):
     for coin,sig,symbol in signals:
         link = "https://www.delta.exchange/app/futures/trade/{}/{}USD".format(coin, coin)
         if "LONG" in sig:
-            msg += '🟩 <b><a href="{}">{} {}</a></b>\n'.format(link, coin, sig)
+            sig2 = sig.replace("LONG", "<b>LONG</b>").replace("FIRE", "<b>FIRE</b>")
+            msg += '🟩 <a href="{}">{}</a> {}\n'.format(link, coin, sig2)
         else:
-            msg += '🟥 <b><a href="{}">{} {}</a></b>\n'.format(link, coin, sig)
+            sig2 = sig.replace("SHORT", "<b>SHORT</b>").replace("FIRE", "<b>FIRE</b>")
+            msg += '🟥 <a href="{}">{}</a> {}\n'.format(link, coin, sig2)
     
     for coin,sig,symbol in fire_watch:
         link = "https://www.delta.exchange/app/futures/trade/{}/{}USD".format(coin, coin)
-        msg += '🟧 <b><a href="{}">{} {}</a></b>\n'.format(link, coin, sig)
+        sig2 = sig.replace("Fire", "<b>Fire</b>")
+        msg += '🟧 <a href="{}">{}</a> {}\n'.format(link, coin, sig2)
         
     for coin,sig,symbol in tight_list:
         link = "https://www.delta.exchange/app/futures/trade/{}/{}USD".format(coin, coin)
-        msg += '⚪ <a href="{}">{} {}</a>\n'.format(link, coin, sig)
+        msg += '⚪ <a href="{}">{}</a> {}\n'.format(link, coin, sig)
     
-    msg += "\n<i>Signals: {}/{} | Fire: {}/{} | 🟩=LONG 🟥=SHORT 🟧=Fire Vol1.1x+</i>".format(len(signals), len(results), len(fire_watch), len(results))
+    msg += "\n<i>Signals: {}/{} | Fire: {}/{} | Vol 1.1x</i>".format(len(signals), len(results), len(fire_watch), len(results))
     return msg
 
 async def delete_old_messages(bot):
@@ -113,7 +116,7 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("45 coin scan..."); await background_scan(update.effective_chat.id, context, False)
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("BOT ONLINE - Color Coding\n🟩 LONG 🟥 SHORT 🟧 Fire ⚪ Tight")
+    await update.message.reply_text("BOT ONLINE - Link Only On Name")
 
 async def auto_loop(app):
     await asyncio.sleep(10)
