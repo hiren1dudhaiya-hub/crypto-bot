@@ -50,9 +50,10 @@ async def get_data(session, symbol, sem):
                 is_sq_now = (bb_up < kc_up) and (bb_low > kc_low); fire = max_sq >= 8 and not is_sq_now
                 rsi_series = calc_rsi(closes, 9); rsi9 = float(rsi_series[-1]); rsi_ma9 = float(np.mean(rsi_series[-9:])); rsi_prev = float(rsi_series[-2]); ma_prev = float(np.mean(rsi_series[-10:-1]))
                 cross_up = rsi_prev < ma_prev and rsi9 > rsi_ma9; cross_down = rsi_prev > ma_prev and rsi9 < rsi_ma9
-                avg_vol20 = np.mean(vols[-21:-1]); vol_mult = vols[-1]/avg_vol20 if avg_vol20>0 else 0; vol_ok = vol_mult >= 1.1
+                avg_vol20 = np.mean(vols[-21:-1]); vol_mult = vols[-1]/avg_vol20 if avg_vol20>0 else 0
                 coin = symbol.replace("USDT",""); vol_str = " Vol{:.1f}x".format(vol_mult)
-                if fire and vol_ok:
+                # VOLUME CONDITION HATAYA - SIRF FIRE + CROSS SE SIGNAL
+                if fire:
                     if cross_up and rsi9 > 50: return (coin, "LONG | RSI {:.0f} SQ{} Fire{} FIRE".format(rsi9, max_sq, vol_str), symbol, True)
                     if cross_down and rsi9 < 50: return (coin, "SHORT | RSI {:.0f} SQ{} Fire{} FIRE".format(rsi9, max_sq, vol_str), symbol, True)
                 sig = "Tight | RSI {:.0f} SQ{}".format(rsi9, max_sq) + (" Fire" if fire else "") + vol_str
@@ -73,10 +74,8 @@ def format_msg(results):
         if is_sig: signals.append((coin,sig,symbol))
         elif "Fire" in sig: fire_watch.append((coin,sig,symbol))
         else: tight_list.append((coin,sig,symbol))
-    
     msg = "<b>AUTO 5 MIN - {} COINS | {}</b>\n".format(len(results), time_str)
     msg += "<b>DELTA 45 - RSI MA CROSS | 30m</b>\n\n"
-    
     for coin,sig,symbol in signals:
         link = "https://www.delta.exchange/app/futures/trade/{}/{}USD".format(coin, coin)
         if "LONG" in sig:
@@ -85,17 +84,14 @@ def format_msg(results):
         else:
             sig2 = sig.replace("SHORT", "<b>SHORT</b>").replace("FIRE", "<b>FIRE</b>")
             msg += '🟥 <a href="{}">{}</a> {}\n'.format(link, coin, sig2)
-    
     for coin,sig,symbol in fire_watch:
         link = "https://www.delta.exchange/app/futures/trade/{}/{}USD".format(coin, coin)
         sig2 = sig.replace("Fire", "<b>Fire</b>")
         msg += '🟧 <a href="{}">{}</a> {}\n'.format(link, coin, sig2)
-        
     for coin,sig,symbol in tight_list:
         link = "https://www.delta.exchange/app/futures/trade/{}/{}USD".format(coin, coin)
         msg += '⚪ <a href="{}">{}</a> {}\n'.format(link, coin, sig)
-    
-    msg += "\n<i>Signals: {}/{} | Fire: {}/{} | Vol 1.1x</i>".format(len(signals), len(results), len(fire_watch), len(results))
+    msg += "\n<i>Signals: {}/{} | Fire: {}/{} | Vol Info</i>".format(len(signals), len(results), len(fire_watch), len(results))
     return msg
 
 async def delete_old_messages(bot):
@@ -116,7 +112,7 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("45 coin scan..."); await background_scan(update.effective_chat.id, context, False)
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("BOT ONLINE - Link Only On Name")
+    await update.message.reply_text("BOT ONLINE - Vol Filter Removed")
 
 async def auto_loop(app):
     await asyncio.sleep(10)
