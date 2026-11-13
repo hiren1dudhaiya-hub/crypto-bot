@@ -23,15 +23,11 @@ def calc_rsi(closes, period=9):
     rsi[:period] = 100. - 100./(1.+rs)
     for i in range(period, len(closes)-1):
         delta = deltas[i]
-        if delta>0:
-            upval=delta; downval=0.
-        else:
-            upval=0.; downval=-delta
+        upval, downval = (delta, 0.) if delta>0 else (0., -delta)
         up = (up*(period-1)+upval)/period
         down = (down*(period-1)+downval)/period
         if down==0: down=0.001
-        rs = up/down
-        rsi[i+1] = 100. - 100./(1.+rs)
+        rsi[i+1] = 100. - 100./(1.+up/down)
     return rsi
 
 async def get_data(session, symbol, sem):
@@ -49,33 +45,33 @@ async def get_data(session, symbol, sem):
                 bb_up = sma20+std20*2; bb_low = sma20-std20*2
                 tr = np.maximum(highs-lows, np.maximum(np.abs(highs-np.roll(closes,1)), np.abs(lows-np.roll(closes,1))))[1:]
                 atr20 = np.mean(tr[-20:]); kc_up = sma20+atr20*1.5; kc_low = sma20-atr20*1.5
-                squeeze_count=0; max_sq=0
+                max_sq=0; sc=0
                 for i in range(-25, -1):
                     if i-19 < -len(closes): continue
                     s=np.mean(closes[i-19:i+1]); sd=np.std(closes[i-19:i+1])
                     bbu=s+sd*2; bbl=s-sd*2
                     tr_i=tr[i] if abs(i)<=len(tr) else atr20
-                    kcu=s+tr_i*1.5; kcl=s-tr_i*1.5
-                    if bbu<kcu and bbl>kcl:
-                        squeeze_count+=1; max_sq=max(max_sq, squeeze_count)
-                    else:
-                        squeeze_count=0
+                    if bbu < s+tr_i*1.5 and bbl > s-tr_i*1.5:
+                        sc+=1; max_sq=max(max_sq, sc)
+                    else: sc=0
                 is_sq_now=(bb_up<kc_up) and (bb_low>kc_low)
-                is_sq_prev=max_sq>=8
-                fire=is_sq_prev and not is_sq_now
+                fire=max_sq>=8 and not is_sq_now
                 rsi_series=calc_rsi(closes,9)
                 rsi9=float(rsi_series[-1]); rsi_ma9=float(np.mean(rsi_series[-9:]))
                 rsi_prev=float(rsi_series[-2]); ma_prev=float(np.mean(rsi_series[-10:-1]))
                 cross_up=rsi_prev<ma_prev and rsi9>rsi_ma9
                 cross_down=rsi_prev>ma_prev and rsi9<rsi_ma9
-                avg_vol20=np.mean(vols[-21:-1]); vol_ok=vols[-1]>avg_vol20*1.1
+                avg_vol20=np.mean(vols[-21:-1])
+                vol_mult = vols[-1]/avg_vol20 if avg_vol20>0 else 0
+                vol_ok=vol_mult >= 1.1
                 coin=symbol.replace("USDT","")
+                vol_str = f" Vol{vol_mult:.1f}x"
                 if fire and vol_ok:
                     if cross_up and rsi9>50:
-                        return (coin, f"🚀 LONG | RSI {rsi9:.0f} CrossUp | SQ{max_sq} 🔥", symbol, True)
+                        return (coin, f"🚀 LONG | RSI {rsi9:.0f} SQ{max_sq} Fire{vol_str} 🔥", symbol, True)
                     if cross_down and rsi9<50:
-                        return (coin, f"🔻 SHORT | RSI {rsi9:.0f} CrossDn | SQ{max_sq} 🔥", symbol, True)
-                sig=f"Tight | RSI {rsi9:.0f} SQ{max_sq}" + (" Fire" if fire else "")
+                        return (coin, f"🔻 SHORT | RSI {rsi9:.0f} SQ{max_sq} Fire{vol_str} 🔥", symbol, True)
+                sig=f"Tight | RSI {rsi9:.0f} SQ{max_sq}" + (" Fire" if fire else "") + vol_str
                 return (coin, sig, symbol, False)
         except Exception as e:
             print(f"Err {symbol}: {e}")
@@ -97,15 +93,13 @@ def format_msg(results):
         link=f"https://www.delta.exchange/app/futures/trade/{coin}/{coin}USD"
         msg+=f'<a href="{link}">{coin}</a> {sig}\n'
     signals=len([r for r in results if r[3]])
-    msg+=f"\n<b>Signals: {signals}/45</b> | SQ8+ Fire RSIxMA 50 Vol1.1"
+    msg+=f"\n<b>Signals: {signals}/45</b> | SQ8+ Fire RSIxMA 50 Vol1.1x"
     return msg
 
 async def delete_old_messages(bot):
     while len(sent_messages)>2:
         old_id=sent_messages.popleft()
-        try:
-            await bot.delete_message(chat_id=CHAT_ID, message_id=old_id)
-            await asyncio.sleep(0.2)
+        try: await bot.delete_message(chat_id=CHAT_ID, message_id=old_id); await asyncio.sleep(0.2)
         except: pass
 
 async def background_scan(chat_id, context, is_auto=False):
@@ -117,34 +111,16 @@ async def background_scan(chat_id, context, is_auto=False):
             sent=await context.bot.send_message(chat_id=chat_id, text=txt, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
             sent_messages.append(sent.message_id)
             await delete_old_messages(context.bot)
-    except Exception as e:
-        print(f"Scan Error: {e}")
+    except Exception as e: print(f"Scan Error: {e}")
 
 async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 45 coin scan...")
-    await background_scan(update.effective_chat.id, context, False)
-
+    await update.message.reply_text("🔍 45 coin scan..."); await background_scan(update.effective_chat.id, context, False)
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"✅ BOT ONLINE 24x7\n5 MIN AUTO | 45 COINS | LAST 2 MSG\nID: {update.effective_chat.id}")
-
+    await update.message.reply_text(f"✅ BOT ONLINE 24x7\nVol % ON | 5 MIN | LAST 2 MSG\nID: {update.effective_chat.id}")
 async def auto_loop(app):
     await asyncio.sleep(10)
     while True:
-        try:
-            await background_scan(CHAT_ID, app, True)
-            await asyncio.sleep(300)
-        except Exception as e:
-            print(f"Loop Error: {e}")
-            await asyncio.sleep(30)
-
+        try: await background_scan(CHAT_ID, app, True); await asyncio.sleep(300)
+        except Exception as e: print(f"Loop Error: {e}"); await asyncio.sleep(30)
 def main():
-    app=Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CommandHandler("scan", scan_cmd))
-    async def on_startup(a): asyncio.create_task(auto_loop(a))
-    app.post_init=on_startup
-    print("Bot starting - FINAL FIXED")
-    app.run_polling(close_loop=False, stop_signals=None)
-
-if __name__=="__main__":
-    main()
+   
