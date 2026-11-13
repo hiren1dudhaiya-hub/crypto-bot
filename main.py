@@ -25,13 +25,28 @@ DELTA_COINS = [
 ]
 
 def calc_rsi(closes, period=9):
-    rsi_series = [50]*len(closes)
-    for i in range(period, len(closes)):
-        d = np.diff(closes[i-period:i+1])
-        g = np.where(d>0,d,0).mean()
-        l = np.where(d<0,-d,0).mean() + 0.0001
-        rsi_series[i] = 100-(100/(1+g/l))
-    return np.array(rsi_series)
+    deltas = np.diff(closes)
+    seed = deltas[:period+1]
+    up = seed[seed>=0].sum()/period
+    down = -seed[seed<0].sum()/period
+    if down == 0: down = 0.001
+    rs = up/down
+    rsi = np.zeros_like(closes)
+    rsi[:period] = 100. - 100./(1.+rs)
+    for i in range(period, len(closes)-1):
+        delta = deltas[i]
+        if delta>0:
+            upval = delta
+            downval = 0.
+        else:
+            upval = 0.
+            downval = -delta
+        up = (up*(period-1) + upval)/period
+        down = (down*(period-1) + downval)/period
+        if down == 0: down = 0.001
+        rs = up/down
+        rsi[i+1] = 100. - 100./(1.+rs)
+    return rsi
 
 async def get_data(session, symbol, sem):
     url = f"{BINANCE_API}/api/v3/klines?symbol={symbol}&interval=30m&limit=100"
@@ -55,115 +70,53 @@ async def get_data(session, symbol, sem):
                 kc_low = sma20 - atr20*1.5
                 
                 squeeze_count = 0
+                max_sq = 0
                 for i in range(-25, -1):
                     if i-19 < -len(closes): continue
                     s = np.mean(closes[i-19:i+1])
                     sd = np.std(closes[i-19:i+1])
                     bbu = s + sd*2; bbl = s - sd*2
-                    tr_i = tr[i] if abs(i) < len(tr) else atr20
+                    tr_i = tr[i] if abs(i) <= len(tr) else atr20
                     kcu = s + tr_i*1.5; kcl = s - tr_i*1.5
                     if bbu < kcu and bbl > kcl:
                         squeeze_count += 1
+                        max_sq = max(max_sq, squeeze_count)
                     else:
-                        if squeeze_count < 8: squeeze_count = 0
+                        squeeze_count = 0
+                sq_display = max_sq if max_sq>0 else 0
 
                 is_sq_now = (bb_up < kc_up) and (bb_low > kc_low)
-                is_sq_prev = squeeze_count >= 8
+                is_sq_prev = max_sq >= 8
                 fire = is_sq_prev and not is_sq_now
 
                 rsi_series = calc_rsi(closes, 9)
-                rsi9 = rsi_series[-1]
-                rsi_ma9 = np.mean(rsi_series[-9:])
-                rsi_prev = rsi_series[-2]
-                ma_prev = np.mean(rsi_series[-10:-1])
+                rsi9 = float(rsi_series[-1])
+                rsi_ma9 = float(np.mean(rsi_series[-9:]))
+                rsi_prev = float(rsi_series[-2])
+                ma_prev = float(np.mean(rsi_series[-10:-1]))
                 cross_up = rsi_prev < ma_prev and rsi9 > rsi_ma9
                 cross_down = rsi_prev > ma_prev and rsi9 < rsi_ma9
+                
                 avg_vol20 = np.mean(vols[-21:-1])
-                vol_ok = vols[-1] > avg_vol20 * 1.3
+                vol_ok = vols[-1] > avg_vol20 * 1.1
 
                 coin = symbol.replace("USDT","")
                 if fire and vol_ok:
                     if cross_up and rsi9 > 50:
-                        sig = f"🚀 LONG | RSI {rsi9:.0f} CrossUp | {squeeze_count} SQ 🔥"
+                        sig = f"🚀 LONG | RSI {rsi9:.0f} CrossUp | SQ{sq_display} 🔥"
+                        return (coin, sig, symbol, True)
                     elif cross_down and rsi9 < 50:
-                        sig = f"🔻 SHORT | RSI {rsi9:.0f} CrossDn | {squeeze_count} SQ 🔥"
-                    else:
-                        sig = f"Tight | RSI {rsi9:.0f} SQ{squeeze_count}"
-                else:
-                    sig = f"Tight | RSI {rsi9:.0f} SQ{squeeze_count}"
+                        sig = f"🔻 SHORT | RSI {rsi9:.0f} CrossDn | SQ{sq_display} 🔥"
+                        return (coin, sig, symbol, True)
                 
-                is_signal = "🔥" in sig
-                return (coin, sig, symbol, is_signal)
-        except:
+                sig = f"Tight | RSI {rsi9:.0f} SQ{sq_display}" + (" Fire" if fire else "")
+                return (coin, sig, symbol, False)
+        except Exception as e:
+            print(f"Err {symbol}: {e}")
             return None
 
 async def do_scan():
     async with aiohttp.ClientSession() as session:
         sem = asyncio.Semaphore(10)
         results = await asyncio.gather(*[get_data(session, s, sem) for s in DELTA_COINS])
-        final = [r for r in results if r]
-        final.sort(key=lambda x: (0 if x[3] else 1, x[0]))
-        return final
-
-def format_msg(results):
-    ist = datetime.utcnow() + timedelta(hours=5, minutes=30)
-    time_str = ist.strftime("%d-%b %I:%M %p IST")
-    msg = f"🔍 <b>DELTA 45 - RSI MA CROSS | 30m | 5 min Auto</b>\n"
-    msg += f"<i>⏰ {time_str}</i>\n\n"
-    for coin, sig, symbol, is_sig in results:
-        link = f"https://www.delta.exchange/app/futures/trade/{coin}/{coin}USD"
-        msg += f'<a href="{link}">{coin}</a> {sig}\n'
-    signals = len([r for r in results if r[3]])
-    msg += f"\n<b>Signals: {signals}/45</b> | Orange 8+ Fire RSIxMA Vol1.3"
-    return msg
-
-async def delete_old_messages(bot):
-    # Last 2 hi rakhega, baaki auto delete
-    while len(sent_messages) > 2:
-        old_id = sent_messages.popleft()
-        try:
-            await bot.delete_message(chat_id=CHAT_ID, message_id=old_id)
-            await asyncio.sleep(0.2)
-        except: pass
-
-async def background_scan(chat_id, context, is_auto=False):
-    try:
-        results = await do_scan()
-        if results:
-            txt = format_msg(results)
-            if is_auto:
-                txt = f"🤖 <b>AUTO 5 MIN - 45 COINS</b>\n\n" + txt
-            sent = await context.bot.send_message(chat_id=chat_id, text=txt, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
-            sent_messages.append(sent.message_id)
-            await delete_old_messages(context.bot)
-    except Exception as e:
-        print(f"Scan Error: {e}")
-
-async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 45 coin scan 30m...")
-    await background_scan(update.effective_chat.id, context, False)
-
-async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"✅ BOT ONLINE 24x7\n5 MIN AUTO | 45 COINS | LAST 2 MSG ONLY\nStrat: SQ8+ Fire RSIxMA 50 Vol1.3\nID: {update.effective_chat.id}")
-
-async def auto_loop(app):
-    await asyncio.sleep(10)
-    while True:
-        try:
-            await background_scan(CHAT_ID, app, True)
-            await asyncio.sleep(300) # ===== 5 MINUTE FIX =====
-        except Exception as e:
-            print(f"Loop Error: {e}")
-            await asyncio.sleep(30)
-
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CommandHandler("scan", scan_cmd))
-    async def on_startup(a): asyncio.create_task(auto_loop(a))
-    app.post_init = on_startup
-    print("Bot starting - 5 MIN AUTO | 45 COINS | LAST 2 MSG | 24x7...")
-    app.run_polling(close_loop=False, stop_signals=None)
-
-if __name__ == "__main__":
-    main()
+        final = [r for
