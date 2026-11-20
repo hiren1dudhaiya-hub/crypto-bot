@@ -37,7 +37,6 @@ async def get_data(session, symbol, sem):
             async with session.get(url, timeout=15) as r:
                 kl30 = await r.json()
         if not isinstance(kl30, list) or len(kl30) < 60: return None
-
         closes90, highs90, lows90 = [], [], []
         for i in range(0, len(kl30)-2, 3):
             c1, c2, c3 = kl30[i], kl30[i+1], kl30[i+2]
@@ -46,22 +45,19 @@ async def get_data(session, symbol, sem):
             lows90.append(min(float(c1[3]), float(c2[3]), float(c3[3])))
         closes90 = np.array(closes90); highs90 = np.array(highs90); lows90 = np.array(lows90)
         if len(closes90) < 20: return None
-
         rsi9_s = calc_rsi(closes90, 9)
         rsi14_s = calc_rsi(closes90, 14)
         rsi9 = float(rsi9_s[-1]); ma3 = float(np.mean(rsi9_s[-3:]))
         rsi14 = float(rsi14_s[-1]); ma9 = float(np.mean(rsi14_s[-9:]))
-
         high_break = highs90[-1] > highs90[-2]
         low_break = lows90[-1] < lows90[-2]
         coin = symbol.replace("USDT","")
-
+        # NO < > SYMBOLS HERE - FIXED!
         if high_break and rsi9 > ma3 and rsi14 > ma9:
-            return (coin, f"LONG | R9:{rsi9:.0f}>M3:{ma3:.0f} HB", symbol, True)
+            return (coin, f"LONG R9 {rsi9:.0f} M3 {ma3:.0f} HB", symbol, True)
         if low_break and rsi9 < ma3 and rsi14 < ma9:
-            return (coin, f"SHORT | R9:{rsi9:.0f}<M3:{ma3:.0f} LB", symbol, True)
-
-        return (coin, f"{'BULL' if rsi9>ma3 else 'BEAR'}", symbol, False)
+            return (coin, f"SHORT R9 {rsi9:.0f} M3 {ma3:.0f} LB", symbol, True)
+        return (coin, f"{'BULL' if rsi9>ma3 else 'BEAR'} R9 {rsi9:.0f} M3 {ma3:.0f}", symbol, False)
     except Exception as e:
         print(f"Err {symbol}: {e}")
         return None
@@ -79,7 +75,6 @@ def format_msg(results):
     time_str = ist.strftime("%I:%M %p - %d %b")
     signals = [r for r in results if r[3]]
     tight = [r for r in results if not r[3]]
-
     msg = f"<b>90m BREAK SCAN | {time_str}</b>\n<b>{len(results)} COINS</b>\n\n"
     if signals:
         msg += "<b>SIGNALS:</b>\n"
@@ -88,12 +83,9 @@ def format_msg(results):
             if "LONG" in sig: msg += f'🟩 <a href="{link}">{coin}</a> {sig}\n'
             else: msg += f'🟥 <a href="{link}">{coin}</a> {sig}\n'
         msg += "\n"
-    
     msg += f"<b>TIGHT ({len(tight)}):</b> "
-    # FIXED UNPACK HERE - 4 values
-    msg += ", ".join([coin for coin, sig, sym, is_sig in tight[:25]])
-    if len(tight) > 25:
-        msg += f" +{len(tight)-25} more"
+    msg += ", ".join([coin for coin, sig, sym, is_sig in tight[:30]])
+    if len(tight) > 30: msg += f" +{len(tight)-30} more"
     msg += f"\n\n<i>Signals: {len(signals)}/{len(results)} | 90m Only</i>"
     return msg
 
@@ -107,7 +99,7 @@ async def background_scan(chat_id, context):
     try:
         results = await do_scan()
         if not results:
-            await context.bot.send_message(chat_id=chat_id, text="❌ Data fail - Retry /scan")
+            await context.bot.send_message(chat_id=chat_id, text="Data fail - Retry /scan")
             return
         txt = format_msg(results)
         sent = await context.bot.send_message(chat_id=chat_id, text=txt, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
@@ -122,7 +114,7 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await background_scan(update.effective_chat.id, context)
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("BOT ONLINE - 90m BREAK FINAL FIXED")
+    await update.message.reply_text("BOT ONLINE - 90m BREAK FINAL FIXED V2")
 
 async def auto_loop(app):
     await asyncio.sleep(10)
@@ -135,7 +127,7 @@ async def auto_loop(app):
             await asyncio.sleep(30)
 
 def main():
-    print("Starting FINAL FIXED Bot...")
+    print("Starting FINAL FIXED V2 Bot...")
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("scan", scan_cmd))
