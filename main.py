@@ -32,9 +32,9 @@ def calc_rsi(closes, period=9):
 
 async def get_data(session, symbol, sem):
     try:
-        url = f"{BINANCE_API}/api/v3/klines?symbol={symbol}&interval=30m&limit=150"
+        url = f"{BINANCE_API}/api/v3/klines?symbol={symbol}&interval=30m&limit=120"
         async with sem:
-            async with session.get(url, timeout=10) as r:
+            async with session.get(url, timeout=15) as r:
                 kl30 = await r.json()
         if not isinstance(kl30, list) or len(kl30) < 60:
             return None
@@ -49,33 +49,34 @@ async def get_data(session, symbol, sem):
         closes90 = np.array(closes90)
         highs90 = np.array(highs90)
         lows90 = np.array(lows90)
-        if len(closes90) < 25:
+        if len(closes90) < 20:
             return None
 
-        rsi9_series = calc_rsi(closes90, 9)
-        rsi14_series = calc_rsi(closes90, 14)
+        rsi9_s = calc_rsi(closes90, 9)
+        rsi14_s = calc_rsi(closes90, 14)
 
-        rsi9 = float(rsi9_series[-1])
-        ma3 = float(np.mean(rsi9_series[-3:]))
-        rsi14 = float(rsi14_series[-1])
-        ma9 = float(np.mean(rsi14_series[-9:]))
+        rsi9 = float(rsi9_s[-1])
+        ma3 = float(np.mean(rsi9_s[-3:]))
+        rsi14 = float(rsi14_s[-1])
+        ma9 = float(np.mean(rsi14_s[-9:]))
 
         high_break = highs90[-1] > highs90[-2]
         low_break = lows90[-1] < lows90[-2]
 
         coin = symbol.replace("USDT","")
-        rsi_str = f"R9:{rsi9:.1f} M3:{ma3:.1f} | R14:{rsi14:.1f} M9:{ma9:.1f}"
+        # SHORT FORMAT - Telegram limit ke liye
+        rsi_str = f"R9:{rsi9:.0f}>M3:{ma3:.0f} R14:{rsi14:.0f}>M9:{ma9:.0f}" if rsi9>ma3 else f"R9:{rsi9:.0f}<M3:{ma3:.0f} R14:{rsi14:.0f}<M9:{ma9:.0f}"
 
         if high_break and rsi9 > ma3 and rsi14 > ma9:
-            return (coin, f"LONG | {rsi_str} | 90m HIGH BREAK ↑", symbol, True)
+            return (coin, f"LONG | {rsi9:.0f}>{ma3:.0f} | HB", symbol, True)
         if low_break and rsi9 < ma3 and rsi14 < ma9:
-            return (coin, f"SHORT | {rsi_str} | 90m LOW BREAK ↓", symbol, True)
+            return (coin, f"SHORT | {rsi9:.0f}<{ma3:.0f} | LB", symbol, True)
 
-        status = "BULL" if rsi9 > ma3 else "BEAR"
-        return (coin, f"{status} Tight | {rsi_str}", symbol, False)
+        # Tight me sirf coin name - message chhota rahega
+        return (coin, f"{'BULL' if rsi9>ma3 else 'BEAR'}", symbol, False)
 
     except Exception as e:
-        print(f"Error {symbol}: {e}")
+        print(f"Err {symbol}: {e}")
         return None
 
 async def do_scan():
@@ -88,53 +89,58 @@ async def do_scan():
 
 def format_msg(results):
     ist = datetime.utcnow() + timedelta(hours=5, minutes=30)
-    time_str = ist.strftime("%I:%M %p IST - %d %b")
+    time_str = ist.strftime("%I:%M %p - %d %b")
     signals = [r for r in results if r[3]]
     tight = [r for r in results if not r[3]]
 
-    msg = f"<b>AUTO 5 MIN - {len(results)} COINS | {time_str}</b>\n"
-    msg += "<b>90m ONLY | R9/M3 + R14/M9 + BREAK</b>\n\n"
+    msg = f"<b>90m BREAK SCAN | {time_str}</b>\n"
+    msg += f"<b>{len(results)} COINS | R9/M3 + R14/M9</b>\n\n"
 
-    for coin,sig,sym in signals:
-        link = f"https://www.delta.exchange/app/futures/trade/{coin}/{coin}USD"
-        if "LONG" in sig:
-            sig2 = sig.replace("LONG", "<b>LONG</b>")
-            msg += f'🟩 <a href="{link}">{coin}</a> {sig2}\n'
-        else:
-            sig2 = sig.replace("SHORT", "<b>SHORT</b>")
-            msg += f'🟥 <a href="{link}">{coin}</a> {sig2}\n'
-
-    for coin,sig,sym in tight:
-        link = f"https://www.delta.exchange/app/futures/trade/{coin}/{coin}USD"
-        msg += f'⚪ <a href="{link}">{coin}</a> {sig}\n'
-
-    msg += f"\n<i>Signals: {len(signals)}/{len(results)} | 90m Break Strategy</i>"
+    if signals:
+        msg += "<b>SIGNALS:</b>\n"
+        for coin,sig,sym in signals:
+            link = f"https://www.delta.exchange/app/futures/trade/{coin}/{coin}USD"
+            if "LONG" in sig:
+                msg += f'🟩 <a href="{link}">{coin}</a> {sig}\n'
+            else:
+                msg += f'🟥 <a href="{link}">{coin}</a> {sig}\n'
+        msg += "\n"
+    
+    # Tight list chhota - sirf 15 coin dikhao
+    msg += f"<b>TIGHT ({len(tight)}):</b> "
+    msg += ", ".join([f"{c}" for c,s,ss in tight[:20]])
+    if len(tight) > 20:
+        msg += f" +{len(tight)-20} more"
+    
+    msg += f"\n\n<i>Signals: {len(signals)}/{len(results)}</i>"
     return msg
 
 async def delete_old_messages(bot):
     while len(sent_messages) > 2:
         old_id = sent_messages.popleft()
-        try:
-            await bot.delete_message(chat_id=CHAT_ID, message_id=old_id)
-        except:
-            pass
+        try: await bot.delete_message(chat_id=CHAT_ID, message_id=old_id)
+        except: pass
 
 async def background_scan(chat_id, context):
-    results = await do_scan()
-    if not results:
-        await context.bot.send_message(chat_id=chat_id, text="❌ Scan fail - Binance data nahi aaya, retry karo")
-        return
-    txt = format_msg(results)
-    sent = await context.bot.send_message(chat_id=chat_id, text=txt, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
-    sent_messages.append(sent.message_id)
-    await delete_old_messages(context.bot)
+    try:
+        results = await do_scan()
+        if not results:
+            await context.bot.send_message(chat_id=chat_id, text="❌ Data fail - Retry /scan")
+            return
+        txt = format_msg(results)
+        sent = await context.bot.send_message(chat_id=chat_id, text=txt, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+        sent_messages.append(sent.message_id)
+        await delete_old_messages(context.bot)
+    except Exception as e:
+        print(f"Scan Error: {e}")
+        await context.bot.send_message(chat_id=chat_id, text=f"Error: {e}")
 
 async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("90m scan...")
     await background_scan(update.effective_chat.id, context)
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("BOT ONLINE - 90m BREAK STRATEGY")
+    await update.message.reply_text("BOT ONLINE - 90m BREAK FINAL")
 
 async def auto_loop(app):
     await asyncio.sleep(10)
@@ -147,7 +153,7 @@ async def auto_loop(app):
             await asyncio.sleep(30)
 
 def main():
-    print("Starting Bot... 90m Break Strategy")
+    print("Starting FINAL 90m Bot...")
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("scan", scan_cmd))
