@@ -10,6 +10,9 @@ CHAT_ID = int(os.getenv("CHAT_ID") or "7086505670")
 BINANCE_API = "https://data-api.binance.vision"
 sent_messages = deque(maxlen=10)
 
+# NAYA LOGIC - Signal sirf 3 msg tak
+active_signals = {} # coin -> {"type": "LONG"/"SHORT", "left": 3}
+
 DELTA_COINS = ["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","SHIBUSDT","PEPEUSDT","AVAXUSDT","ADAUSDT","LINKUSDT","DOTUSDT","TRXUSDT","BCHUSDT","LTCUSDT","NEARUSDT","SUIUSDT","APTUSDT","ARBUSDT","OPUSDT","POLUSDT","ETCUSDT","FILUSDT","UNIUSDT","AAVEUSDT","ATOMUSDT","INJUSDT","TIAUSDT","SEIUSDT","JUPUSDT","BONKUSDT","WIFUSDT","FLOKIUSDT","FETUSDT","RENDERUSDT","ARUSDT","STXUSDT","MKRUSDT","LDOUSDT","ENAUSDT","STRKUSDT","BLURUSDT","JTOUSDT","BRETTUSDT","MEMEUSDT","ONDOUSDT"]
 
 def calc_rsi(closes, period):
@@ -64,55 +67,89 @@ async def do_scan():
         final.sort(key=lambda x: x['coin'])
         return final
 
+def update_signal_logic(results):
+    # Ye function 3 msg wala logic sambhalega
+    global active_signals
+    new_active = {}
+    for r in results:
+        coin = r['coin']
+        # Agar abhi naya signal aaya hai
+        if r['is_long'] or r['is_short']:
+            sig_type = "LONG" if r['is_long'] else "SHORT"
+            # Naya signal -> 3 msg ka counter start
+            active_signals[coin] = {"type": sig_type, "left": 3}
+        
+        # Agar is coin ka signal active hai to use rakho
+        if coin in active_signals:
+            if active_signals[coin]['left'] > 0:
+                new_active[coin] = active_signals[coin]
+                new_active[coin]['left'] -= 1
+                r['show_long'] = new_active[coin]['type'] == "LONG"
+                r['show_short'] = new_active[coin]['type'] == "SHORT"
+                r['show_signal'] = True
+            else:
+                r['show_signal'] = False
+        else:
+            r['show_signal'] = False
+            r['show_long'] = False
+            r['show_short'] = False
+
+    # Jo khatam ho gaye unko hatao
+    active_signals = {k:v for k,v in new_active.items() if v['left'] >= 0}
+    return results
+
 def format_msg(results):
     ist=datetime.utcnow()+timedelta(hours=5,minutes=30)
-    time_str=ist.strftime("%I:%M %p - %d %b")
-    msg=f"<b>{time_str}</b>\n\n"
+    time_str=ist.strftime("%I:%M %p")
+    msg=f"<b>{time_str}</b>\n"
     for r in results:
         r90="💚" if r['rsi90_bull'] else "❤️"
         r12="♥️" if r['rsi12_bull'] else "💔"
-        if r['high_break']: candle="💚 HB"
-        elif r['low_break']: candle="❤️ LB"
-        else: candle="🤍 NO"
-        if r['is_long']: signal="✅ LONG"
-        elif r['is_short']: signal="✅ SHORT"
-        else: signal="❌"
+        if r['high_break']: candle="💚HB"
+        elif r['low_break']: candle="❤️LB"
+        else: candle="🤍NO"
+        
+        if r.get('show_signal'):
+            if r.get('show_long'): signal="✅L"
+            else: signal="✅S"
+        else:
+            signal="❌"
         
         link=f"https://www.delta.exchange/app/futures/trade/{r['coin']}/{r['coin']}USD"
-        # Coin pe link hai, par line ek hi hai
-        msg+=f'<a href="{link}">{r["coin"]}</a> 90m RSI{r90} 12h RSI{r12} 90m Candle{candle} Signal{signal}\n'
+        msg+=f'<a href="{link}">{r["coin"]}</a> 90m{r90} 12h{r12} C{candle} S{signal}\n'
     return msg
 
 async def delete_old_messages(bot):
-    while len(sent_messages)>2:
-        old_id=sent_messages.popleft()
-        try: await bot.delete_message(chat_id=CHAT_ID, message_id=old_id)
-        except: pass
+    try:
+        while len(sent_messages) > 2:
+            old_id=sent_messages.popleft()
+            try: await bot.delete_message(chat_id=CHAT_ID, message_id=old_id)
+            except: pass
+    except: pass
 
 async def background_scan(chat_id, context):
     try:
         results=await do_scan()
         if not results: return
+        results = update_signal_logic(results)
         txt=format_msg(results)
         sent=await context.bot.send_message(chat_id=chat_id, text=txt, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
         sent_messages.append(sent.message_id)
         await delete_old_messages(context.bot)
-    except Exception as e: print(e)
+    except Exception as e: print(f"Scan err: {e}")
 
 async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Scanning...")
     await background_scan(update.effective_chat.id, context)
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("BOT ONLINE")
+    await update.message.reply_text("BOT ONLINE - 3 MSG SIGNAL LOGIC")
 
 async def auto_loop(app):
     await asyncio.sleep(10)
     while True:
-        try:
-            await background_scan(CHAT_ID, app)
-            await asyncio.sleep(300)
-        except: await asyncio.sleep(30)
+        try: await background_scan(CHAT_ID, app)
+        except: pass
+        await asyncio.sleep(300)
 
 async def post_init(app):
     asyncio.create_task(auto_loop(app))
