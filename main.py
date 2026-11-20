@@ -77,7 +77,10 @@ def format_msg(results):
         if r['is_long']: signal="✅ LONG"
         elif r['is_short']: signal="✅ SHORT"
         else: signal="❌"
-        msg+=f"{r['coin']} 90m RSI{r90} 12h RSI{r12} 90m Candle{candle} Signal{signal}\n"
+        
+        link=f"https://www.delta.exchange/app/futures/trade/{r['coin']}/{r['coin']}USD"
+        # Coin pe link hai, par line ek hi hai
+        msg+=f'<a href="{link}">{r["coin"]}</a> 90m RSI{r90} 12h RSI{r12} 90m Candle{candle} Signal{signal}\n'
     return msg
 
 async def delete_old_messages(bot):
