@@ -36,8 +36,7 @@ async def get_data(session, symbol, sem):
         async with sem:
             async with session.get(url, timeout=15) as r:
                 kl30 = await r.json()
-        if not isinstance(kl30, list) or len(kl30) < 60:
-            return None
+        if not isinstance(kl30, list) or len(kl30) < 60: return None
 
         closes90, highs90, lows90 = [], [], []
         for i in range(0, len(kl30)-2, 3):
@@ -45,36 +44,24 @@ async def get_data(session, symbol, sem):
             closes90.append(float(c3[4]))
             highs90.append(max(float(c1[2]), float(c2[2]), float(c3[2])))
             lows90.append(min(float(c1[3]), float(c2[3]), float(c3[3])))
-
-        closes90 = np.array(closes90)
-        highs90 = np.array(highs90)
-        lows90 = np.array(lows90)
-        if len(closes90) < 20:
-            return None
+        closes90 = np.array(closes90); highs90 = np.array(highs90); lows90 = np.array(lows90)
+        if len(closes90) < 20: return None
 
         rsi9_s = calc_rsi(closes90, 9)
         rsi14_s = calc_rsi(closes90, 14)
-
-        rsi9 = float(rsi9_s[-1])
-        ma3 = float(np.mean(rsi9_s[-3:]))
-        rsi14 = float(rsi14_s[-1])
-        ma9 = float(np.mean(rsi14_s[-9:]))
+        rsi9 = float(rsi9_s[-1]); ma3 = float(np.mean(rsi9_s[-3:]))
+        rsi14 = float(rsi14_s[-1]); ma9 = float(np.mean(rsi14_s[-9:]))
 
         high_break = highs90[-1] > highs90[-2]
         low_break = lows90[-1] < lows90[-2]
-
         coin = symbol.replace("USDT","")
-        # SHORT FORMAT - Telegram limit ke liye
-        rsi_str = f"R9:{rsi9:.0f}>M3:{ma3:.0f} R14:{rsi14:.0f}>M9:{ma9:.0f}" if rsi9>ma3 else f"R9:{rsi9:.0f}<M3:{ma3:.0f} R14:{rsi14:.0f}<M9:{ma9:.0f}"
 
         if high_break and rsi9 > ma3 and rsi14 > ma9:
-            return (coin, f"LONG | {rsi9:.0f}>{ma3:.0f} | HB", symbol, True)
+            return (coin, f"LONG | R9:{rsi9:.0f}>M3:{ma3:.0f} HB", symbol, True)
         if low_break and rsi9 < ma3 and rsi14 < ma9:
-            return (coin, f"SHORT | {rsi9:.0f}<{ma3:.0f} | LB", symbol, True)
+            return (coin, f"SHORT | R9:{rsi9:.0f}<M3:{ma3:.0f} LB", symbol, True)
 
-        # Tight me sirf coin name - message chhota rahega
         return (coin, f"{'BULL' if rsi9>ma3 else 'BEAR'}", symbol, False)
-
     except Exception as e:
         print(f"Err {symbol}: {e}")
         return None
@@ -93,26 +80,21 @@ def format_msg(results):
     signals = [r for r in results if r[3]]
     tight = [r for r in results if not r[3]]
 
-    msg = f"<b>90m BREAK SCAN | {time_str}</b>\n"
-    msg += f"<b>{len(results)} COINS | R9/M3 + R14/M9</b>\n\n"
-
+    msg = f"<b>90m BREAK SCAN | {time_str}</b>\n<b>{len(results)} COINS</b>\n\n"
     if signals:
         msg += "<b>SIGNALS:</b>\n"
-        for coin,sig,sym in signals:
+        for coin, sig, sym, is_sig in signals:
             link = f"https://www.delta.exchange/app/futures/trade/{coin}/{coin}USD"
-            if "LONG" in sig:
-                msg += f'🟩 <a href="{link}">{coin}</a> {sig}\n'
-            else:
-                msg += f'🟥 <a href="{link}">{coin}</a> {sig}\n'
+            if "LONG" in sig: msg += f'🟩 <a href="{link}">{coin}</a> {sig}\n'
+            else: msg += f'🟥 <a href="{link}">{coin}</a> {sig}\n'
         msg += "\n"
     
-    # Tight list chhota - sirf 15 coin dikhao
     msg += f"<b>TIGHT ({len(tight)}):</b> "
-    msg += ", ".join([f"{c}" for c,s,ss in tight[:20]])
-    if len(tight) > 20:
-        msg += f" +{len(tight)-20} more"
-    
-    msg += f"\n\n<i>Signals: {len(signals)}/{len(results)}</i>"
+    # FIXED UNPACK HERE - 4 values
+    msg += ", ".join([coin for coin, sig, sym, is_sig in tight[:25]])
+    if len(tight) > 25:
+        msg += f" +{len(tight)-25} more"
+    msg += f"\n\n<i>Signals: {len(signals)}/{len(results)} | 90m Only</i>"
     return msg
 
 async def delete_old_messages(bot):
@@ -140,7 +122,7 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await background_scan(update.effective_chat.id, context)
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("BOT ONLINE - 90m BREAK FINAL")
+    await update.message.reply_text("BOT ONLINE - 90m BREAK FINAL FIXED")
 
 async def auto_loop(app):
     await asyncio.sleep(10)
@@ -153,12 +135,11 @@ async def auto_loop(app):
             await asyncio.sleep(30)
 
 def main():
-    print("Starting FINAL 90m Bot...")
+    print("Starting FINAL FIXED Bot...")
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("scan", scan_cmd))
-    async def on_startup(a):
-        asyncio.create_task(auto_loop(a))
+    async def on_startup(a): asyncio.create_task(auto_loop(a))
     app.post_init = on_startup
     app.run_polling()
 
