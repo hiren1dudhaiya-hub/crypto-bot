@@ -30,35 +30,97 @@ def calc_rsi(closes, period=9):
         rsi[i+1] = 100. - 100./(1.+up/down)
     return rsi
 
+def sma(arr, period):
+    return np.mean(arr[-period:])
+
 async def get_data(session, symbol, sem):
-    url = "{}/api/v3/klines?symbol={}&interval=30m&limit=100".format(BINANCE_API, symbol)
-    async with sem:
-        try:
-            async with session.get(url, timeout=10) as r:
-                kl = await r.json()
-                if not isinstance(kl, list) or len(kl) < 50: return None
-                closes = np.array([float(k[4]) for k in kl]); highs = np.array([float(k[2]) for k in kl]); lows = np.array([float(k[3]) for k in kl]); vols = np.array([float(k[5]) for k in kl])
-                sma20 = np.mean(closes[-20:]); std20 = np.std(closes[-20:]); bb_up = sma20 + std20*2; bb_low = sma20 - std20*2
-                tr = np.maximum(highs-lows, np.maximum(np.abs(highs-np.roll(closes,1)), np.abs(lows-np.roll(closes,1))))[1:]
-                atr20 = np.mean(tr[-20:]); kc_up = sma20 + atr20*1.5; kc_low = sma20 - atr20*1.5
-                max_sq=0; sc=0
-                for i in range(-25, -1):
-                    if i-19 < -len(closes): continue
-                    s = np.mean(closes[i-19:i+1]); sd = np.std(closes[i-19:i+1]); bbu = s + sd*2; bbl = s - sd*2; tr_i = tr[i] if abs(i) <= len(tr) else atr20; kcu = s + tr_i*1.5; kcl = s - tr_i*1.5
-                    if bbu < kcu and bbl > kcl: sc+=1; max_sq=max(max_sq, sc)
-                    else: sc=0
-                is_sq_now = (bb_up < kc_up) and (bb_low > kc_low); fire = max_sq >= 8 and not is_sq_now
-                rsi_series = calc_rsi(closes, 9); rsi9 = float(rsi_series[-1]); rsi_ma9 = float(np.mean(rsi_series[-9:])); rsi_prev = float(rsi_series[-2]); ma_prev = float(np.mean(rsi_series[-10:-1]))
-                cross_up = rsi_prev < ma_prev and rsi9 > rsi_ma9; cross_down = rsi_prev > ma_prev and rsi9 < rsi_ma9
-                avg_vol20 = np.mean(vols[-21:-1]); vol_mult = vols[-1]/avg_vol20 if avg_vol20>0 else 0
-                coin = symbol.replace("USDT",""); vol_str = " Vol{:.1f}x".format(vol_mult)
-                # VOLUME CONDITION HATAYA - SIRF FIRE + CROSS SE SIGNAL
-                if fire:
-                    if cross_up and rsi9 > 50: return (coin, "LONG | RSI {:.0f} SQ{} Fire{} FIRE".format(rsi9, max_sq, vol_str), symbol, True)
-                    if cross_down and rsi9 < 50: return (coin, "SHORT | RSI {:.0f} SQ{} Fire{} FIRE".format(rsi9, max_sq, vol_str), symbol, True)
-                sig = "Tight | RSI {:.0f} SQ{}".format(rsi9, max_sq) + (" Fire" if fire else "") + vol_str
-                return (coin, sig, symbol, False)
-        except: return None
+    try:
+        # --- 12H DATA ---
+        url12 = f"{BINANCE_API}/api/v3/klines?symbol={symbol}&interval=12h&limit=100"
+        # --- 1H DATA FOR 9H BUILD ---
+        url1h = f"{BINANCE_API}/api/v3/klines?symbol={symbol}&interval=1h&limit=200"
+        async with sem:
+            async with session.get(url12, timeout=10) as r12:
+                kl12 = await r12.json()
+            async with session.get(url1h, timeout=10) as r1h:
+                kl1h = await r1h.json()
+
+        if not isinstance(kl12, list) or len(kl12) < 30: return None
+        if not isinstance(kl1h, list) or len(kl1h) < 90: return None
+
+        closes12 = np.array([float(k[4]) for k in kl12])
+        highs12 = np.array([float(k[2]) for k in kl12])
+        lows12 = np.array([float(k[3]) for k in kl12])
+
+        # BUILD 9H CANDLES FROM 1H (9 x 1H = 1 candle)
+        closes9, highs9, lows9 = [], [], []
+        for i in range(0, len(kl1h)-8, 9):
+            chunk = kl1h[i:i+9]
+            closes9.append(float(chunk[-1][4]))
+            highs9.append(max(float(c[2]) for c in chunk))
+            lows9.append(min(float(c[3]) for c in chunk))
+        closes9 = np.array(closes9)
+        highs9 = np.array(highs9)
+        lows9 = np.array(lows9)
+
+        if len(closes9) < 20: return None
+
+        # --- INDICATORS ---
+        rsi9_12 = calc_rsi(closes12, 9)[-1]
+        ma3_12 = sma(closes12, 3)
+        rsi14_9 = calc_rsi(closes9, 14)[-1]
+        ma9_9 = sma(closes9, 9)
+
+        # --- BREAKUP / BREAKDOWN ---
+        # 12H Break
+        high_break_12 = highs12[-1] > highs12[-2]
+        low_break_12 = lows12[-1] < lows12[-2]
+        # 9H Break
+        high_break_9 = highs9[-1] > highs9[-2]
+        low_break_9 = lows9[-1] < lows9[-2]
+
+        coin = symbol.replace("USDT","")
+        rsi_str = f"R9:{rsi9_12:.0f} M3:{ma3_12:.0f} | R14:{rsi14_9:.0f} M9:{ma9_9:.0f}"
+
+        # --- NEW STRATEGY: 12H & 9H BREAKUP/BREAKDOWN ---
+        is_bull_12 = rsi9_12 > ma3_12
+        is_bull_9 = rsi14_9 > ma9_9
+        is_bear_12 = rsi9_12 < ma3_12
+        is_bear_9 = rsi14_9 < ma9_9
+
+        # LONG CONDITION: Dono BULL + Koi ek me HIGH BREAK
+        if is_bull_12 and is_bull_9 and (high_break_12 or high_break_9):
+            brk = "12H-HIGH" if high_break_12 else "9H-HIGH" if high_break_9 else "HIGH"
+            if high_break_12 and high_break_9: brk = "12H+9H HIGH BREAK"
+            return (coin, f"LONG | {rsi_str} | {brk} ↑", symbol, True)
+        
+        # SHORT CONDITION: Dono BEAR + Koi ek me LOW BREAK
+        if is_bear_12 and is_bear_9 and (low_break_12 or low_break_9):
+            brk = "12H-LOW" if low_break_12 else "9H-LOW" if low_break_9 else "LOW"
+            if low_break_12 and low_break_9: brk = "12H+9H LOW BREAK"
+            return (coin, f"SHORT | {rsi_str} | {brk} ↓", symbol, True)
+
+        # TIGHT / WAIT
+        bull_count = (1 if is_bull_12 else 0) + (1 if is_bull_9 else 0)
+        if bull_count == 2:
+            status = "BULL Tight"
+        elif bull_count == 0:
+            status = "BEAR Tight"
+        else:
+            status = "MIX Tight"
+
+        # Break info for tight
+        if high_break_12 or high_break_9:
+            status += " HighTry"
+        if low_break_12 or low_break_9:
+            status += " LowTry"
+
+        sig = f"{status} | {rsi_str}"
+        return (coin, sig, symbol, False)
+
+    except Exception as e:
+        # print(f"Error {symbol}: {e}")
+        return None
 
 async def do_scan():
     async with aiohttp.ClientSession() as session:
@@ -69,29 +131,24 @@ async def do_scan():
 def format_msg(results):
     ist = datetime.utcnow() + timedelta(hours=5, minutes=30)
     time_str = ist.strftime("%I:%M %p IST - %d %b")
-    signals = []; fire_watch = []; tight_list = []
+    signals = []; tight_list = []
     for coin,sig,symbol,is_sig in results:
         if is_sig: signals.append((coin,sig,symbol))
-        elif "Fire" in sig: fire_watch.append((coin,sig,symbol))
         else: tight_list.append((coin,sig,symbol))
-    msg = "<b>AUTO 5 MIN - {} COINS | {}</b>\n".format(len(results), time_str)
-    msg += "<b>DELTA 45 - RSI MA CROSS | 30m</b>\n\n"
+    msg = f"<b>AUTO 5 MIN - {len(results)} COINS | {time_str}</b>\n"
+    msg += "<b>12H R9/M3 + 9H R14/M9 | BREAKUP/DOWN</b>\n\n"
     for coin,sig,symbol in signals:
-        link = "https://www.delta.exchange/app/futures/trade/{}/{}USD".format(coin, coin)
+        link = f"https://www.delta.exchange/app/futures/trade/{coin}/{coin}USD"
         if "LONG" in sig:
-            sig2 = sig.replace("LONG", "<b>LONG</b>").replace("FIRE", "<b>FIRE</b>")
-            msg += '🟩 <a href="{}">{}</a> {}\n'.format(link, coin, sig2)
+            sig2 = sig.replace("LONG", "<b>LONG</b>").replace("HIGH", "<b>HIGH BREAK</b>")
+            msg += f'🟩 <a href="{link}">{coin}</a> {sig2}\n'
         else:
-            sig2 = sig.replace("SHORT", "<b>SHORT</b>").replace("FIRE", "<b>FIRE</b>")
-            msg += '🟥 <a href="{}">{}</a> {}\n'.format(link, coin, sig2)
-    for coin,sig,symbol in fire_watch:
-        link = "https://www.delta.exchange/app/futures/trade/{}/{}USD".format(coin, coin)
-        sig2 = sig.replace("Fire", "<b>Fire</b>")
-        msg += '🟧 <a href="{}">{}</a> {}\n'.format(link, coin, sig2)
+            sig2 = sig.replace("SHORT", "<b>SHORT</b>").replace("LOW", "<b>LOW BREAK</b>")
+            msg += f'🟥 <a href="{link}">{coin}</a> {sig2}\n'
     for coin,sig,symbol in tight_list:
-        link = "https://www.delta.exchange/app/futures/trade/{}/{}USD".format(coin, coin)
-        msg += '⚪ <a href="{}">{}</a> {}\n'.format(link, coin, sig)
-    msg += "\n<i>Signals: {}/{} | Fire: {}/{} | Vol Info</i>".format(len(signals), len(results), len(fire_watch), len(results))
+        link = f"https://www.delta.exchange/app/futures/trade/{coin}/{coin}USD"
+        msg += f'⚪ <a href="{link}">{coin}</a> {sig}\n'
+    msg += f"\n<i>Signals: {len(signals)}/{len(results)} | 12H+9H Strategy</i>"
     return msg
 
 async def delete_old_messages(bot):
@@ -109,10 +166,10 @@ async def background_scan(chat_id, context, is_auto=False):
         await delete_old_messages(context.bot)
 
 async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("45 coin scan..."); await background_scan(update.effective_chat.id, context, False)
+    await update.message.reply_text("45 coin scan 12H+9H..."); await background_scan(update.effective_chat.id, context, False)
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("BOT ONLINE - Vol Filter Removed")
+    await update.message.reply_text("BOT ONLINE - 12H & 9H BREAKUP/DOWN STRATEGY")
 
 async def auto_loop(app):
     await asyncio.sleep(10)
